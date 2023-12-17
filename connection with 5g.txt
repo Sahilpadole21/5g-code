@@ -1,0 +1,18 @@
+connection with 5g
+
+ultrasonic
+tring-PB6
+echo-PB7
+vcc-5v
+gnd-G
+
+Temperature sensor
+data -PB3
+vcc-3.3
+gnd-g
+
+nboit 5g module
+vcc-3.3
+gnd-G
+rx pin of nboit module -PB10
+Tx pin of nboit module -PB11
