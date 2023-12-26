@@ -1,0 +1,5 @@
+Hardware Connections:
+ * - VCC = 3.3V
+ * - GND = GND
+ * - SDA = PB7 (use inline 330 ohm resistor if your board is 5V)
+ * - SCL = PB6 (use inline 330 o
