@@ -1,0 +1,620 @@
+#include <Arduino.h>
+#include <ArduinoSort.h> 
+//#include <SoftwareSerial.h>
+#include <NewPing.h>
+#include <String.h>
+#include <OneWire.h>
+#include <DallasTemperature.h>
+//library for sht20   
+#include "DFRobot_SHT20.h"
+#include <Wire.h> 
+DFRobot_SHT20 sht20(&Wire, SHT20_I2C_ADDR);
+
+// Define UART pins for ESP32
+#define BOARD_USART3_TX_PIN PB10
+#define BOARD_USART3_RX_PIN PB11
+//#define SOFTWARE_SERIAL_RX 16 // Replace with your ESP32 RX pin
+//#define SOFTWARE_SERIAL_TX 17 // Replace with your ESP32 TX pin
+#define ONE_WIRE_BUS PB3
+//#define ONE_WIRE_BUS 26 // Replace with the actual GPIO pin number
+// NB-IoT module UART configuration
+#define NB_IOT_BAUD_RATE  115200
+const int numReadings = 10; // Number of readings to take
+const int threshold = 5;  // Threshold for considering a reading as correct (in cm)
+OneWire oneWire(ONE_WIRE_BUS);
+DallasTemperature sensors(&oneWire);
+//NewPing sonar(TRIGGER_PIN, ECHO_PIN);
+int initial_status = 0;
+//ds10b20 temperature sensore
+float temperature=20;
+float temp_read;
+float temp_sum = 0;
+int temp_count = 0;
+int temp_complete = 0;
+float temp_arr[15];
+
+//sht20 temperature
+float temperature1;
+float temp_read1;
+float temp_sum1 = 0;
+int temp_count1 = 0;
+int temp_complete1 = 0;
+float temp_arr1[15];
+
+//sht20 humidity
+float humidity1;
+float humi_read1;
+float humi_sum1 = 0;
+int humi_count1 = 0;
+int humi_complete1 = 0;
+float humi_arr1[15];
+//distance ultrasonic 
+float distance;
+float distance_prev;
+float dist_read;
+float dist_sum = 0;
+int dist_count = 0;
+int dist_complete = 0;
+float dist_arr[15] = {};
+
+float dist_thresh = 10;
+unsigned long startTime = 0;
+unsigned long restartDelay = 30 * 60 * 1000; // 30 minutes in milliseconds
+
+//SoftwareSerial Debug(SOFTWARE_SERIAL_RX, SOFTWARE_SERIAL_TX); // RX, TX
+
+const int ULTRASONIC_TRIG_PIN = PB8;
+const int ULTRASONIC_ECHO_PIN = PB9;
+#define MAX_DISTANCE 450 // Adjust as needed
+NewPing sonar(ULTRASONIC_TRIG_PIN, ULTRASONIC_ECHO_PIN, MAX_DISTANCE);
+const int transmitTimeout = 15000;  // it is used to wait for response after transmiting data to NBIoT
+
+char dataStringRAW[]  = "AT+RAWPUB=alerts,IIITH,<data>\r";
+
+
+const int rangeSINR[4] = {20, 13, 5, 0};
+
+// 0 to 4
+int signalStatus;
+boolean networkStatus = false;
+const int modemResetPin = 16;
+String transmitString;
+String modemResponse;
+String networkString;
+unsigned long startOffline;
+const int infoTimeout = 5000;
+unsigned long modemEpochTime;
+bool Slash_n = false;
+boolean modemStatus = false;
+int RSRP;
+int RSRQ;
+int SINR;
+
+const int modemStartupInterval = 30;
+char networkStr[30] = "";
+unsigned int startmsg = 0, networkLatch = 0;
+
+void flushReceiveBuffer()
+{
+  while (Serial.available())
+  {
+    Serial.read();
+    yield();
+  }
+}
+
+
+/*
+   check modem response
+*/
+bool checkResponse(unsigned long timeout, String Response) {
+  // flushReceiveBuffer();
+  unsigned long previousMillis = millis();
+  boolean responseStatus = false;
+  boolean gotResponse = false;
+
+  String dataString = "";
+  modemResponse = "";
+  while ((unsigned long)(millis() - previousMillis) <= timeout && !gotResponse)
+  {
+
+    while (Serial3.available())
+    {
+      char inChar = (char)Serial3.read();
+      dataString += inChar;
+    }
+    dataString.replace("\r", "");
+    if (dataString.indexOf(Response) >= 0)
+    {
+      responseStatus = true;
+      gotResponse = true;
+      break;
+    }
+    if (dataString.indexOf("ERROR") >= 0)
+    {
+
+      responseStatus = false;
+      gotResponse = true;
+      break;
+    }
+  }
+  Serial.print("Response : ");
+  Serial.println(dataString);
+  modemResponse = dataString;
+  // Debug.println(F("End Checking Response"));
+  //Serial.printf_P(PSTR("End Checking, Response: %s\n"), modemResponse.c_str());
+  //Serial.printf("End Checking, Response: %s\n", modemResponse.c_str());
+  Serial.print("End Checking, Response: ");
+  Serial.print(modemResponse);
+  Serial.println();
+
+
+  if (!gotResponse)
+  {
+    Serial.println(F("Response Timeout"));
+  }
+  Serial3.flush();
+  return responseStatus;
+}
+
+
+/*
+   function to send data to server
+*/
+boolean sendRAWData(String dataToSend, int timeout)
+{
+  flushReceiveBuffer();
+  String toSend;
+  dataToSend.trim();
+  //toSend = FPSTR(dataStringRAW);
+  toSend = dataStringRAW;
+  toSend.replace("<data>", dataToSend);
+  //Serial.printf_P(PSTR("Sending Raw Data: %s\n"), toSend.c_str());
+  //Serial.printf("Sending Raw Data: %s\n", toSend.c_str());
+  Serial.print("Sending Raw Data: ");
+  Serial.print(toSend);
+  Serial.println();
+
+
+  Serial3.print(toSend);
+  // debugA("Sending Raw Data: %s\n", toSend.c_str());
+  transmitString = "";
+  transmitString = toSend;
+  if (checkResponse(timeout, "+RAWPUB: SENT"))
+  {
+    startOffline = millis();
+    return true;
+  }
+  else
+  {
+    //    Debug.println(F("Send Failed"));
+    return false;
+  }
+  // Serial.flush();
+}
+
+
+
+/*
+ * function to get network info
+ */
+boolean updateNetworkInfo()
+{
+  flushReceiveBuffer();
+  Serial3.print("AT+NWKINFO?\r");
+
+  unsigned long previousMillis = millis();
+  boolean responseStatus = false;
+  boolean gotResponse = false;
+  String responseString;
+  int commaCount = 0;
+  //    boolean EC_Status = false;
+  while ((unsigned long)(millis() - previousMillis) <= infoTimeout && !gotResponse)
+  {
+    while (Serial3.available())
+    {
+      char inChar = (char)Serial3.read();
+      responseString += inChar;
+      if (inChar == '\r') {
+        Slash_n = true;
+      }
+      if (inChar == ',')
+      {
+        commaCount++;
+      }
+    }
+    if (responseString.indexOf("NWKINFO") >= 0 &&  Slash_n == true)//(commaCount == 4 ||
+    {
+      //          Serial3.println(EC20_String);
+      Slash_n = false;
+      responseStatus = true;
+      gotResponse = true;
+      //      networkString = responseString;
+      Serial.println(responseString);
+      responseString.replace("+NWKINFO:", "");
+      Serial.println(responseString);
+
+      networkLatch = responseString.substring(0, responseString.indexOf(",")).toInt();
+      Serial.println("NWKLATCH:" + String(networkLatch, DEC));
+
+      int startIndex = responseString.indexOf(",") + 1;
+      int endIndex = responseString.lastIndexOf(",");
+      networkString = responseString.substring(startIndex, endIndex);
+
+      RSRP = networkString.substring(0, networkString.indexOf(",")).toInt();
+
+      RSRQ = networkString.substring(networkString.indexOf(",") + 1, networkString.lastIndexOf(",")).toInt();
+
+      SINR = networkString.substring(networkString.lastIndexOf(",") + 1, networkString.length()).toInt();
+      // modemEpochTime = responseString.substring(responseString.lastIndexOf(","), responseString.length());;
+      String epochTimeString = responseString.substring(responseString.lastIndexOf(",") + 1, responseString.length());
+      Serial.println(epochTimeString);
+      // modemEpochTime = atol(responseString.substring(responseString.lastIndexOf(","), responseString.length()).c_str());
+      modemEpochTime = atol(epochTimeString.c_str());
+      //Serial.printf_P(PSTR("RSRP: %ddBm,RSRQ: %ddB,SINR: %ddB,Modem Clock: %ld\n"), RSRP, RSRQ, SINR, modemEpochTime);
+      //Serial.printf("RSRP: %ddBm, RSRQ: %ddB, SINR: %ddB, Modem Clock: %ld\n", RSRP, RSRQ, SINR, modemEpochTime);
+      Serial.print("RSRP: ");
+      Serial.print(RSRP);
+      Serial.print("dBm, RSRQ: ");
+      Serial.print(RSRQ);
+      Serial.print("dB, SINR: ");
+      Serial.print(SINR);
+      Serial.print("dB, Modem Clock: ");
+      Serial.println(modemEpochTime);
+
+      if (SINR >= rangeSINR[0])
+      {
+        signalStatus = 4;
+      }
+      else if (SINR >= rangeSINR[1] && SINR < rangeSINR[0])
+      {
+        signalStatus = 3;
+      }
+      else if (SINR >= rangeSINR[2] && SINR < rangeSINR[1])
+      {
+        signalStatus = 2;
+      }
+      else if (SINR >= rangeSINR[3] && SINR < rangeSINR[2])
+      {
+        signalStatus = 1;
+      }
+      else
+      {
+        signalStatus = 0;
+      }
+      
+      if (networkLatch == 1 && signalStatus >= 1 ) {
+        networkStatus = true;        
+      }
+      else {
+        networkStatus = false;
+      }
+      //    }
+      break;
+    }
+    if (responseString.indexOf("ERROR") >= 0)
+    {
+      responseStatus = false;
+      gotResponse = true;
+      break;
+    }
+  }
+  //  Debug.println(commaCount);
+  Serial.print(F("Network Info:"));
+  Serial.println(responseString);
+  //  Serial3.println(networkString);
+
+  if (!gotResponse)
+  {
+    Serial.println(F("Response Timeout"));
+    modemEpochTime = 0;
+  }
+  Serial3.flush();
+
+  return responseStatus;
+}
+
+/*
+ * function to check modem response
+ */
+
+void initCallModem()
+{
+  unsigned long modemStartedAt = millis();
+  flushReceiveBuffer();
+  Serial3.println(F("Starting Modem: "));
+  while ((unsigned long)(millis() - modemStartedAt) <= modemStartupInterval * 1000UL)
+  {
+    Serial3.print("AT\r");
+    delay(100);
+    if (checkResponse(1000, "OK"))
+    {
+      modemStatus = true;
+      Serial.println(F("Modem Available"));
+      if (updateNetworkInfo())
+      {
+        sprintf(networkStr, "%s", networkString.c_str());
+      }
+      break;
+    }
+    // if ((unsigned long)(millis() - modemStatus) >= 1000UL)
+    // {
+    //   Serial3.print(F("."));
+    // }
+  }
+}
+void sendATCommand(const char *command) {
+  Serial3.println(command);
+}
+void send_Data_FIVEG(float distance_, float temp_,float temp1_,float humi1_)
+{
+   initCallModem();
+  //checkResponse(unsigned long timeout, String Response);
+  updateNetworkInfo();
+  checkResponse(5000, "+NWKINFO");
+  //int distance = sonar.ping_cm();
+
+  // Example: Sending the temperature value in the "AT+RAWPUB" command
+  //String dataToSend = "Temperature: " + String(temperature) + "°C, Distance: " + String(distance) + "cm";
+  String dataToSend = "Temperature: " + String(temperature) + "°C, Distance: " + String(distance) + "cm, sht_temperature: "+ String(temperature1)+"°C, sht_humidity: "+ String(humidity1) +"%";
+  sendRAWData(dataToSend, 15000);
+
+  // Add any additional code or data sending logic as needed
+  
+  // Delay between iterations
+  delay(5000);
+ 
+}
+
+
+void get_temp_readings()
+{
+  temp_count = 0;
+  temp_complete = 0;
+  while (temp_complete < 1)
+  {
+    sensors.requestTemperatures();
+    temp_read = sensors.getTempCByIndex(0);
+    if (temp_read > 1)
+    {
+      if (temp_count == 10)
+      {
+        Serial.print("Unsorted Temperature Array: ");
+        print_array(temp_arr);
+        sortArray(temp_arr, temp_count+1);
+        Serial.print("Sorted Temperature Array: ");
+        print_array(temp_arr);
+        temperature = temp_arr[6];
+        temp_complete = 1;
+        delay(1000);
+        break;
+      }
+      else
+      {
+        temp_arr[temp_count]= temp_read;
+        temp_count = temp_count + 1;
+        Serial.print("Count - ");
+        Serial.print(temp_count);
+        Serial.print("    Raw Temperature: ");
+        Serial.print(temp_read);
+        Serial.println(" °C");
+        Serial.print("ARRAY DATA : ");
+        Serial.print(temp_arr[temp_count]);
+        Serial.println("");
+        delay(1000);
+      }
+    }
+  }
+  Serial.println("Out of the Temperature Loop  ");
+  Serial.print("  Final Temperature  ");
+  Serial.println(temperature);
+  temp_count = 0;
+  Serial.println("Count reset to Zero");
+}
+
+void print_array(float* Arr_)
+{
+  for(int i=0;i<11;i++)
+  {
+    Serial.print(Arr_[i]);
+    Serial. print(" ");
+    
+  }
+  delay(1000);
+}
+
+void get_dist_readings()
+{
+  dist_arr[15]={};
+  dist_count = 0;
+  dist_complete = 0;
+  while (dist_complete < 1)
+  {
+    //sensors.requestTemperatures();
+    dist_read = sonar.ping_cm();
+    if (dist_read >= 27&& dist_read<451)
+    {
+      if (dist_count == 10)
+      {
+        Serial.print("Unsorted Distance Array: ");
+        print_array(dist_arr);
+        sortArray(dist_arr, dist_count+1);
+        Serial.print("Sorted Distance Array: ");
+        print_array(dist_arr);
+        distance = dist_arr[6];
+        dist_complete = 1;
+        delay(1000);
+        break;
+      }
+      else
+      {
+        dist_arr[dist_count]= dist_read;
+        dist_count = dist_count + 1;
+        Serial.print("Count - ");
+        Serial.print(dist_count);
+        Serial.print("    Raw Distance: ");
+        Serial.print(dist_read);
+        Serial.println("  cm");
+        Serial.print("ARRAY DATA : ");
+        Serial.print(dist_arr[dist_count]);
+        Serial.println("");
+        delay(1000);
+      }
+    }
+  }
+  Serial.println("Out of the Distanve Loop  ");
+  Serial.print("  Final Distanve  ");
+  Serial.println(distance);
+  dist_count = 0;
+  Serial.println("Count reset to Zero");
+}
+//function for sht20 temperature
+void get_temp_readings1()
+{
+  temp_count1 = 0;
+  temp_complete1 = 0;
+  while (temp_complete1 < 1)
+  {
+    
+    temp_read1 = sht20.readTemperature();
+    if (temp_read1> 1)
+    {
+      if (temp_count1 == 10)
+      {
+        Serial.print("Unsorted Temperature Array: ");
+        print_array(temp_arr1);
+        sortArray(temp_arr1, temp_count1+1);
+        Serial.print("Sorted Temperature Array: ");
+        print_array(temp_arr1);
+        temperature1 = temp_arr1[6];
+        temp_complete1 = 1;
+        delay(1000);
+        break;
+      }
+      else
+      {
+        temp_arr1[temp_count1]= temp_read1;
+        temp_count1 = temp_count1 + 1;
+        Serial.print("Count - ");
+        Serial.print(temp_count1);
+        Serial.print("    Raw Temperature: ");
+        Serial.print(temp_read1);
+        Serial.println(" °C");
+        Serial.print("ARRAY DATA : ");
+        Serial.print(temp_arr1[temp_count1]);
+        Serial.println("");
+        delay(1000);
+      }
+    }
+  }
+  Serial.println("Out of the Temperature Loop  ");
+  Serial.print("  Final Temperature  ");
+  Serial.println(temperature1);
+  temp_count1 = 0;
+  Serial.println("Count reset to Zero");
+}
+//fuction for sht20 humidity
+void get_humidity_readings1()
+{
+  humi_count1 = 0;
+  humi_complete1 = 0;
+  while (humi_complete1 < 1)
+  {
+    
+    humi_read1 = sht20.readHumidity();
+    if (humi_read1> 1)
+    {
+      if (humi_count1 == 10)
+      {
+        Serial.print("Unsorted Humidity Array: ");
+        print_array(humi_arr1);
+        sortArray(humi_arr1, humi_count1+1);
+        Serial.print("Sorted Humidity Array: ");
+        print_array(humi_arr1);
+        humidity1 = humi_arr1[6];
+        humi_complete1 = 1;
+        delay(1000);
+        break;
+      }
+      else
+      {
+        humi_arr1[humi_count1]= humi_read1;
+        humi_count1 = humi_count1 + 1;
+        Serial.print("Count - ");
+        Serial.print(humi_count1);
+        Serial.print("    Raw Humidity: ");
+        Serial.print(humi_read1);
+        Serial.println(" %");
+        Serial.print("ARRAY DATA : ");
+        Serial.print(humi_arr1[humi_count1]);
+        Serial.println("");
+        delay(1000);
+      }
+    }
+  }
+  Serial.println("Out of the Humidity Loop  ");
+  Serial.print("  Final Humidity  ");
+  Serial.println(humidity1);
+  humi_count1 = 0;
+  Serial.println("Count reset to Zero");
+}
+
+
+
+
+
+void setup() {
+  Serial.begin(115200);
+  
+  Wire.begin();  // Initialize I2C communication
+  delay(100);
+  // Init SHT20 Sensor
+  sht20.initSHT20();
+  delay(100);
+  Serial.println("Sensor init finish!");
+  sht20.checkSHT20();
+  
+  sensors.begin();
+  Serial3.begin(NB_IOT_BAUD_RATE);
+  //Debug.begin(NB_IOT_BAUD_RATE);
+  pinMode(ULTRASONIC_TRIG_PIN, OUTPUT);
+  pinMode(ULTRASONIC_ECHO_PIN, INPUT);
+  delay(1000); // Wait for UART to stabilize
+}
+
+
+
+
+void loop() {
+  
+  if(initial_status == 0)
+  {
+    Serial.println("In Initail Condition");
+    get_dist_readings();
+    get_temp_readings();
+    //sht20
+    get_temp_readings1();
+    get_humidity_readings1();
+    send_Data_FIVEG(distance,temperature,temperature1,humidity1);
+    
+    Serial.println("Sent Data Successfully");
+    distance_prev = distance;
+    initial_status = 1;
+  }
+  if(initial_status == 1)
+  {
+    Serial.print("In Secondary Condition");
+    get_dist_readings();
+    get_temp_readings();
+    //sht20
+    get_temp_readings1();
+    get_humidity_readings1();
+    if(abs(distance - distance_prev)< dist_thresh)
+    {
+      send_Data_FIVEG(distance,temperature,temperature1,humidity1);
+      distance_prev = distance;
+    }
+  }
+  delay(60000);
+  
+}
