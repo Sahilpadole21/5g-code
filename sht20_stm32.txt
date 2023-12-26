@@ -1,0 +1,138 @@
+#include "DFRobot_SHT20.h"
+#include <ArduinoSort.h> 
+#include <Wire.h> 
+DFRobot_SHT20 sht20(&Wire, SHT20_I2C_ADDR);
+
+
+//sht temperature
+float temperature1;
+float temp_read1;
+float temp_sum1 = 0;
+int temp_count1 = 0;
+int temp_complete1 = 0;
+float temp_arr1[15];
+
+//sht humidity
+float humidity1;
+float humi_read1;
+float humi_sum1 = 0;
+int humi_count1 = 0;
+int humi_complete1 = 0;
+float humi_arr1[15];
+
+
+void setup() {
+  Serial.begin(115200);
+
+  Wire.begin();  // Initialize I2C communication
+  delay(100);
+
+  // Init SHT20 Sensor
+  sht20.initSHT20();
+  delay(100);
+  Serial.println("Sensor init finish!");
+  sht20.checkSHT20();
+  // put your setup code here, to run once:
+
+}
+
+void loop() {
+  get_temp_readings1();
+  get_humidity_readings1();
+  
+  // put your main code here, to run repeatedly:
+
+}
+void get_temp_readings1()
+{
+  temp_count1 = 0;
+  temp_complete1 = 0;
+  while (temp_complete1 < 1)
+  {
+    
+    temp_read1 = sht20.readTemperature();
+    if (temp_read1> 1)
+    {
+      if (temp_count1 == 10)
+      {
+        Serial.print("Unsorted Temperature Array: ");
+        print_array(temp_arr1);
+        sortArray(temp_arr1, temp_count1+1);
+        Serial.print("Sorted Temperature Array: ");
+        print_array(temp_arr1);
+        temperature1 = temp_arr1[6];
+        temp_complete1 = 1;
+        break;
+      }
+      else
+      {
+        temp_arr1[temp_count1]= temp_read1;
+        temp_count1 = temp_count1 + 1;
+        Serial.print("Count - ");
+        Serial.print(temp_count1);
+        Serial.print("    Raw Temperature: ");
+        Serial.print(temp_read1);
+        Serial.println(" °C");
+        Serial.print("ARRAY DATA : ");
+        Serial.print(temp_arr1[temp_count1]);
+        Serial.println("");
+      }
+    }
+  }
+  Serial.println("Out of the Temperature Loop  ");
+  Serial.print("  Final Temperature  ");
+  Serial.println(temperature1);
+  temp_count1 = 0;
+  Serial.println("Count reset to Zero");
+}
+
+void get_humidity_readings1()
+{
+  humi_count1 = 0;
+  humi_complete1 = 0;
+  while (humi_complete1 < 1)
+  {
+    
+    humi_read1 = sht20.readHumidity();
+    if (humi_read1> 1)
+    {
+      if (humi_count1 == 10)
+      {
+        Serial.print("Unsorted Humidity Array: ");
+        print_array(humi_arr1);
+        sortArray(humi_arr1, humi_count1+1);
+        Serial.print("Sorted Humidity Array: ");
+        print_array(humi_arr1);
+        humidity1 = humi_arr1[6];
+        humi_complete1 = 1;
+        break;
+      }
+      else
+      {
+        humi_arr1[humi_count1]= humi_read1;
+        humi_count1 = humi_count1 + 1;
+        Serial.print("Count - ");
+        Serial.print(humi_count1);
+        Serial.print("    Raw Humidity: ");
+        Serial.print(humi_read1);
+        Serial.println(" %");
+        Serial.print("ARRAY DATA : ");
+        Serial.print(humi_arr1[humi_count1]);
+        Serial.println("");
+      }
+    }
+  }
+  Serial.println("Out of the Humidity Loop  ");
+  Serial.print("  Final Humidity  ");
+  Serial.println(humidity1);
+  humi_count1 = 0;
+  Serial.println("Count reset to Zero");
+}
+void print_array(float* Arr_)
+{
+  for(int i=0;i<11;i++)
+  {
+    Serial.print(Arr_[i]);
+    Serial. print(" ");
+  }
+}
