@@ -1,0 +1,253 @@
+#include <String.h>
+#include <OneWire.h>
+#include <DallasTemperature.h>
+#include <NewPing.h>
+#include <ArduinoSort.h>
+//#include <Arduino.h>
+
+#include <SoftwareSerial.h>
+SoftwareSerial gprsSerial(26,27);
+
+// Data wire is connected to GPIO pin
+#define ONE_WIRE_BUS 16 // Replace with the actual GPIO pin number
+//#define BOARD_USART3_TX_PIN PB10
+//#define BOARD_USART3_RX_PIN PB11
+#define TRIGGER_PIN 18
+#define ECHO_PIN 5
+
+const int numReadings = 10; // Number of readings to take
+const int threshold = 5;  // Threshold for considering a reading as correct (in cm)
+OneWire oneWire(ONE_WIRE_BUS);
+DallasTemperature sensors(&oneWire);
+NewPing sonar(TRIGGER_PIN, ECHO_PIN);
+int initial_status = 0;
+
+float temperature;
+float temp_read;
+float temp_sum = 0;
+int temp_count = 0;
+int temp_complete = 0;
+float temp_arr[15];
+
+float distance;
+float distance_prev;
+float dist_read;
+float dist_sum = 0;
+int dist_count = 0;
+int dist_complete = 0;
+float dist_arr[15] = {};
+
+float dist_thresh = 10;
+unsigned long startTime = 0;
+unsigned long restartDelay = 30 * 60 * 1000; // 30 minutes in milliseconds
+
+void setup()
+{
+  gprsSerial.begin(9600);               // the GPRS baud rate
+  Serial.begin(9600);
+  sensors.begin();
+  delay(1000);
+}
+
+void send_Data_gsm(float distance_, float temp_)
+{
+  if (gprsSerial.available())
+    Serial.write(gprsSerial.read());
+ 
+  gprsSerial.println("AT");
+  delay(1000);
+ 
+  gprsSerial.println("AT+CPIN?");
+  delay(1000);
+ 
+  gprsSerial.println("AT+CREG?");
+  delay(1000);
+ 
+  gprsSerial.println("AT+CGATT?");
+  delay(1000);
+ 
+  gprsSerial.println("AT+CIPSHUT");
+  delay(1000);
+ 
+  gprsSerial.println("AT+CIPSTATUS");
+  delay(2000);
+ 
+  gprsSerial.println("AT+CIPMUX=0");
+  delay(2000);
+ 
+  ShowSerialData();
+ 
+  gprsSerial.println("AT+CSTT=\"airtelgprs.com\"");//start task and setting the APN,
+  delay(1000);
+ 
+  ShowSerialData();
+ 
+  gprsSerial.println("AT+CIICR");//bring up wireless connection
+  delay(3000);
+ 
+  ShowSerialData();
+ 
+  gprsSerial.println("AT+CIFSR");//get local IP adress
+  delay(2000);
+ 
+  ShowSerialData();
+ 
+  gprsSerial.println("AT+CIPSPRT=0");
+  delay(3000);
+ 
+  ShowSerialData();
+  
+  gprsSerial.println("AT+CIPSTART=\"TCP\",\"api.thingspeak.com\",\"80\"");//start up the connection
+  delay(6000);
+ 
+  ShowSerialData();
+ 
+  gprsSerial.println("AT+CIPSEND");//begin send data to remote server
+  delay(4000);
+  ShowSerialData();
+  
+  String str="GET https://api.thingspeak.com/update?api_key=O13AOCHYYNU2LQ19&field6=" + String(distance_) +"&field7="+String(temp_);
+  Serial.println(str);
+  gprsSerial.println(str);//begin send data to remote server
+  
+  delay(4000);
+  ShowSerialData();
+ 
+  gprsSerial.println((char)26);//sending
+  delay(5000);//waitting for reply, important! the time is base on the condition of internet 
+  gprsSerial.println();
+ 
+  ShowSerialData();
+ 
+  gprsSerial.println("AT+CIPSHUT");//close the connection
+  delay(100);
+  ShowSerialData();
+}
+
+void ShowSerialData()
+{
+  while(gprsSerial.available()!=0)
+  Serial.write(gprsSerial.read());
+  delay(5000);
+}
+
+void get_temp_readings()
+{
+  temp_count = 0;
+  temp_complete = 0;
+  while (temp_complete < 1)
+  {
+    sensors.requestTemperatures();
+    temp_read = sensors.getTempCByIndex(0);
+    if (temp_read > 1)
+    {
+      if (temp_count == 10)
+      {
+        Serial.print("Unsorted Temperature Array: ");
+        print_array(temp_arr);
+        sortArray(temp_arr, temp_count+1);
+        Serial.print("Sorted Temperature Array: ");
+        print_array(temp_arr);
+        temperature = temp_arr[6];
+        temp_complete = 1;
+        break;
+      }
+      else
+      {
+        temp_arr[temp_count]= temp_read;
+        temp_count = temp_count + 1;
+        Serial.print("Count - ");
+        Serial.print(temp_count);
+        Serial.print("    Raw Temperature: ");
+        Serial.print(temp_read);
+        Serial.println(" °C");
+        Serial.print("ARRAY DATA : ");
+        Serial.print(temp_arr[temp_count]);
+        Serial.println("");
+      }
+    }
+  }
+  Serial.println("Out of the Temperature Loop  ");
+  Serial.print("  Final Temperature  ");
+  Serial.println(temperature);
+  temp_count = 0;
+  Serial.println("Count reset to Zero");
+}
+
+void print_array(float* Arr_)
+{
+  for(int i=0;i<11;i++)
+  {
+    Serial.print(Arr_[i]);
+    Serial. print(" ");
+  }
+}
+
+void get_dist_readings()
+{
+  dist_arr[15]={};
+  dist_count = 0;
+  dist_complete = 0;
+  while (dist_complete < 1)
+  {
+    sensors.requestTemperatures();
+    dist_read = sonar.ping_cm();
+    if (dist_read >= 27&& dist_read<451)
+    {
+      if (dist_count == 10)
+      {
+        Serial.print("Unsorted Distance Array: ");
+        print_array(dist_arr);
+        sortArray(dist_arr, dist_count+1);
+        Serial.print("Sorted Distance Array: ");
+        print_array(dist_arr);
+        distance = dist_arr[6];
+        dist_complete = 1;
+        break;
+      }
+      else
+      {
+        dist_arr[dist_count]= dist_read;
+        dist_count = dist_count + 1;
+        Serial.print("Count - ");
+        Serial.print(dist_count);
+        Serial.print("    Raw Distance: ");
+        Serial.print(dist_read);
+        Serial.println("  cm");
+        Serial.print("ARRAY DATA : ");
+        Serial.print(dist_arr[dist_count]);
+        Serial.println("");
+      }
+    }
+  }
+  Serial.println("Out of the Distanve Loop  ");
+  Serial.print("  Final Distanve  ");
+  Serial.println(distance);
+  dist_count = 0;
+  Serial.println("Count reset to Zero");
+}
+
+void loop()
+{
+  if(initial_status == 0)
+  {
+    Serial.println("In Initail Condition");
+    get_dist_readings();
+    get_temp_readings();
+    send_Data_gsm(distance, temperature);
+    Serial.println("Sent Data Successfully");
+    distance_prev = distance;
+    initial_status = 1;
+  }
+  if(initial_status == 1)
+  {
+    Serial.print("In Secondary Condition");
+    get_dist_readings();
+    get_temp_readings();
+    if(abs(distance - distance_prev)< dist_thresh)
+    {
+      send_Data_gsm(distance, temperature);
+      distance_prev = distance;
+    }
+  }
+}
